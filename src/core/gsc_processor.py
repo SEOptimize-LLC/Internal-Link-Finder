@@ -4,7 +4,7 @@ Google Search Console data processor for performance metrics integration
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # Added Tuple if needed
 import logging
 from datetime import datetime, timedelta
 
@@ -355,4 +355,5 @@ class GSCDataProcessor:
             
         except Exception as e:
             logger.error(f"Error exporting GSC summary: {str(e)}")
+
             raise
