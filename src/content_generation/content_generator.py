@@ -1,5 +1,5 @@
 """
-Internal Link Content Generator implementing the sophisticated .md framework
+Internal Link Content Generator implementing the sophisticated .md framework with AI
 """
 
 import re
@@ -14,6 +14,10 @@ from textstat import flesch_reading_ease, flesch_kincaid_grade
 from collections import Counter
 import spacy
 from sentence_transformers import SentenceTransformer
+import openai
+from anthropic import Anthropic
+import google.generativeai as genai
+import streamlit as st
 
 from config import config, StyleProfile, QualityScores, LinkSuggestion
 
@@ -29,7 +33,6 @@ except:
 try:
     nlp = spacy.load("en_core_web_sm")
 except:
-    # Fallback if model not installed
     nlp = None
     logger = logging.getLogger(__name__)
     logger.warning("spaCy model not loaded. Some features may be limited.")
@@ -37,14 +40,17 @@ except:
 logger = logging.getLogger(__name__)
 
 class InternalLinkContentGenerator:
-    """Generate style-matched internal link content suggestions"""
+    """Generate style-matched internal link content suggestions using AI"""
     
     def __init__(self):
-        """Initialize content generator"""
+        """Initialize content generator with AI clients"""
         self.scraper = EnhancedScraper()
         self.style_analyzer = StyleAnalyzer()
         self.phrase_matcher = PhraseMatcher()
         self.quality_assurance = QualityAssurance()
+        
+        # Initialize AI clients based on available credentials
+        self.ai_client = self._initialize_ai_client()
         
         # Initialize sentence transformer for semantic similarity
         try:
@@ -53,9 +59,34 @@ class InternalLinkContentGenerator:
             self.sentence_model = None
             logger.warning("Sentence transformer not loaded. Semantic features limited.")
     
+    def _initialize_ai_client(self):
+        """Initialize the AI client based on available credentials"""
+        # Check for OpenAI
+        if 'OPENAI_API_KEY' in st.secrets:
+            openai.api_key = st.secrets['OPENAI_API_KEY']
+            logger.info("Using OpenAI for content generation")
+            return 'openai'
+        
+        # Check for Anthropic
+        elif 'ANTHROPIC_API_KEY' in st.secrets:
+            self.anthropic = Anthropic(api_key=st.secrets['ANTHROPIC_API_KEY'])
+            logger.info("Using Anthropic Claude for content generation")
+            return 'anthropic'
+        
+        # Check for Google Gemini
+        elif 'GOOGLE_API_KEY' in st.secrets:
+            genai.configure(api_key=st.secrets['GOOGLE_API_KEY'])
+            self.gemini_model = genai.GenerativeModel('gemini-pro')
+            logger.info("Using Google Gemini for content generation")
+            return 'gemini'
+        
+        else:
+            logger.warning("No AI API credentials found. Using fallback template generation.")
+            return None
+    
     def generate_link_suggestions(self, target_url: str, destination_url: str) -> Dict:
         """
-        Generate internal link suggestions with style-matched content
+        Generate internal link suggestions with AI-powered style-matched content
         
         Args:
             target_url: URL that will host the link
@@ -65,7 +96,7 @@ class InternalLinkContentGenerator:
             Dictionary with 3 link suggestions in table format
         """
         try:
-            logger.info(f"Generating suggestions for {target_url} -> {destination_url}")
+            logger.info(f"Generating AI-powered suggestions for {target_url} -> {destination_url}")
             
             # Step 1: Scrape and process content
             target_content = self.scraper.scrape_and_process(target_url)
@@ -74,25 +105,40 @@ class InternalLinkContentGenerator:
             if not target_content or not dest_content:
                 raise ValueError("Failed to scrape content from URLs")
             
-            # Step 2: Analyze target style
+            # Step 2: Analyze target style with enhanced AI analysis
             style_profile = self.style_analyzer.analyze_style(target_content['text'])
             
-            # Step 3: Find anchor candidates
-            anchor_candidates = self.phrase_matcher.find_anchor_candidates(
-                target_content,
-                dest_content,
-                style_profile
-            )
-            
-            # Step 4: Generate content snippets
-            suggestions = []
-            for anchor in anchor_candidates:
-                snippet_data = self._generate_snippet(
-                    anchor,
+            # Step 3: Find anchor candidates using AI-enhanced matching
+            if self.ai_client:
+                anchor_candidates = self._ai_enhanced_anchor_candidates(
                     target_content,
                     dest_content,
                     style_profile
                 )
+            else:
+                anchor_candidates = self.phrase_matcher.find_anchor_candidates(
+                    target_content,
+                    dest_content,
+                    style_profile
+                )
+            
+            # Step 4: Generate content snippets (AI-powered or template-based)
+            suggestions = []
+            for anchor in anchor_candidates:
+                if self.ai_client:
+                    snippet_data = self._generate_ai_snippet(
+                        anchor,
+                        target_content,
+                        dest_content,
+                        style_profile
+                    )
+                else:
+                    snippet_data = self._generate_snippet(
+                        anchor,
+                        target_content,
+                        dest_content,
+                        style_profile
+                    )
                 
                 # Step 5: Quality validation
                 quality_scores = self.quality_assurance.validate_suggestion(
@@ -133,9 +179,181 @@ class InternalLinkContentGenerator:
             logger.error(f"Error generating suggestions: {str(e)}")
             raise
     
+    def _ai_enhanced_anchor_candidates(self, target_content: Dict, dest_content: Dict,
+                                      style_profile: StyleProfile) -> List[str]:
+        """Use AI to find optimal anchor text candidates"""
+        
+        prompt = f"""Analyze these two pieces of content and suggest 3 optimal anchor text phrases (3-10 words each) for linking from the target to the destination page.
+
+Target Page Content (first 500 words):
+{target_content['text'][:500]}
+
+Destination Page Content (first 500 words):
+{dest_content['text'][:500]}
+
+Requirements:
+1. Each anchor text should be 3-10 words
+2. The phrases should naturally appear or could naturally fit in the target content
+3. The phrases should accurately describe what users will find on the destination page
+4. Avoid generic phrases like "click here" or "learn more"
+5. The phrases should match the target page's writing style: {style_profile.formality_level}, {style_profile.vocabulary_level}
+
+Return exactly 3 anchor text suggestions, one per line, without numbering or bullets."""
+
+        try:
+            if self.ai_client == 'openai':
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    max_tokens=150
+                )
+                anchor_texts = response.choices[0].message.content.strip().split('\n')
+                
+            elif self.ai_client == 'anthropic':
+                response = self.anthropic.messages.create(
+                    model="claude-3-opus-20240229",
+                    max_tokens=150,
+                    temperature=0.7,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                anchor_texts = response.content[0].text.strip().split('\n')
+                
+            elif self.ai_client == 'gemini':
+                response = self.gemini_model.generate_content(prompt)
+                anchor_texts = response.text.strip().split('\n')
+            
+            # Clean and validate anchor texts
+            anchor_texts = [text.strip() for text in anchor_texts if text.strip()][:3]
+            
+            # Ensure we have exactly 3
+            while len(anchor_texts) < 3:
+                anchor_texts.append(f"comprehensive {dest_content['url'].split('/')[-1].replace('-', ' ')}")
+            
+            return anchor_texts[:3]
+            
+        except Exception as e:
+            logger.error(f"AI anchor generation failed: {str(e)}")
+            # Fallback to original method
+            return self.phrase_matcher.find_anchor_candidates(
+                target_content, dest_content, style_profile
+            )
+    
+    def _generate_ai_snippet(self, anchor: str, target_content: Dict,
+                           dest_content: Dict, style_profile: StyleProfile) -> Dict:
+        """Generate AI-powered content snippet matching target style"""
+        
+        # Find optimal insertion point
+        insertion_point = self._find_insertion_point(anchor, target_content, dest_content)
+        
+        # Create AI prompt for content generation
+        prompt = self._create_content_generation_prompt(
+            anchor, insertion_point, style_profile, target_content, dest_content
+        )
+        
+        try:
+            # Generate content using AI
+            generated_content = self._call_ai_for_content(prompt)
+            
+            # Ensure it meets length requirements (3-6 sentences)
+            sentences = nltk.sent_tokenize(generated_content) if nltk else generated_content.split('.')
+            if len(sentences) < 3 or len(sentences) > 6:
+                # Regenerate or adjust
+                generated_content = self._adjust_content_length(generated_content, sentences)
+            
+            # Create placement hint
+            placement_hint = self._create_placement_hint(insertion_point, target_content)
+            
+            return {
+                'content': generated_content,
+                'placement_hint': placement_hint,
+                'insertion_point': insertion_point
+            }
+            
+        except Exception as e:
+            logger.error(f"AI content generation failed: {str(e)}")
+            # Fallback to template-based generation
+            return self._generate_snippet(anchor, target_content, dest_content, style_profile)
+    
+    def _create_content_generation_prompt(self, anchor: str, insertion_point: Dict,
+                                         style_profile: StyleProfile, target_content: Dict,
+                                         dest_content: Dict) -> str:
+        """Create detailed prompt for AI content generation"""
+        
+        context_before = insertion_point.get('sentence', '')
+        
+        prompt = f"""Generate a natural content snippet that introduces an internal link. The snippet should be exactly 3-6 sentences.
+
+CONTEXT:
+Target page topic: {target_content['text'][:200]}
+Destination page topic: {dest_content['text'][:200]}
+Anchor text to incorporate: "{anchor}"
+Text before insertion point: "{context_before}"
+
+STYLE REQUIREMENTS:
+- Formality level: {style_profile.formality_level}
+- Vocabulary level: {style_profile.vocabulary_level}
+- Average sentence length: {style_profile.avg_sentence_length} words
+- Common transitions used: {', '.join(style_profile.common_transitions[:3]) if style_profile.common_transitions else 'None'}
+- Tone: {', '.join(style_profile.tone_indicators) if style_profile.tone_indicators else 'neutral'}
+
+CONTENT REQUIREMENTS:
+1. Write exactly 3-6 complete sentences
+2. Naturally incorporate the anchor text "{anchor}" (keep it exactly as provided)
+3. Create a smooth transition from the current topic to why readers should explore the linked content
+4. Match the writing style described above
+5. Make the content flow naturally with the surrounding text
+6. Focus on value to the reader - why should they click this link?
+
+Generate ONLY the content snippet, no explanations or metadata:"""
+        
+        return prompt
+    
+    def _call_ai_for_content(self, prompt: str) -> str:
+        """Call the appropriate AI service to generate content"""
+        
+        if self.ai_client == 'openai':
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=200
+            )
+            return response.choices[0].message.content.strip()
+            
+        elif self.ai_client == 'anthropic':
+            response = self.anthropic.messages.create(
+                model="claude-3-opus-20240229",
+                max_tokens=200,
+                temperature=0.7,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text.strip()
+            
+        elif self.ai_client == 'gemini':
+            response = self.gemini_model.generate_content(prompt)
+            return response.text.strip()
+        
+        else:
+            raise ValueError("No AI client available")
+    
+    def _adjust_content_length(self, content: str, sentences: List[str]) -> str:
+        """Adjust content to meet 3-6 sentence requirement"""
+        
+        if len(sentences) < 3:
+            # Ask AI to expand
+            prompt = f"Expand this content to exactly 3-4 sentences while maintaining the same style and message:\n{content}"
+            return self._call_ai_for_content(prompt)
+        
+        elif len(sentences) > 6:
+            # Truncate to 6 sentences
+            return ' '.join(sentences[:6])
+        
+        return content
+    
     def _generate_snippet(self, anchor: str, target_content: Dict,
                          dest_content: Dict, style_profile: StyleProfile) -> Dict:
-        """Generate a style-matched content snippet"""
+        """Generate a style-matched content snippet (template-based fallback)"""
         
         # Find optimal insertion point
         insertion_point = self._find_insertion_point(
@@ -234,7 +452,7 @@ class InternalLinkContentGenerator:
     def _generate_sentences(self, anchor: str, insertion_point: Dict,
                            style_profile: StyleProfile, target_content: Dict,
                            dest_content: Dict) -> List[str]:
-        """Generate 3-6 sentences matching target style"""
+        """Generate 3-6 sentences matching target style (template-based)"""
         
         sentences = []
         num_sentences = config.DEFAULT_SNIPPET_LENGTH
@@ -270,7 +488,7 @@ class InternalLinkContentGenerator:
     
     def _generate_opening_sentence(self, anchor: str, insertion_point: Dict,
                                    style_profile: StyleProfile, dest_content: Dict) -> str:
-        """Generate opening sentence matching style"""
+        """Generate opening sentence matching style (template-based)"""
         
         # Use common sentence starters from profile
         starters = style_profile.sentence_starters or [
@@ -292,7 +510,7 @@ class InternalLinkContentGenerator:
     
     def _generate_development_sentence(self, anchor: str, style_profile: StyleProfile,
                                       dest_content: Dict, previous: List[str]) -> str:
-        """Generate development sentence"""
+        """Generate development sentence (template-based)"""
         
         # Use transitions from profile
         transitions = style_profile.common_transitions or [
@@ -313,7 +531,7 @@ class InternalLinkContentGenerator:
     
     def _generate_closing_sentence(self, anchor: str, style_profile: StyleProfile,
                                    dest_content: Dict) -> str:
-        """Generate closing sentence with anchor integration"""
+        """Generate closing sentence with anchor integration (template-based)"""
         
         # Natural integration patterns
         if style_profile.formality_level == 'formal':
@@ -380,13 +598,21 @@ class InternalLinkContentGenerator:
         
         anchor = fallback_anchors[index % len(fallback_anchors)]
         
-        # Generate snippet
-        snippet_data = self._generate_snippet(
-            anchor,
-            target_content,
-            dest_content,
-            style_profile
-        )
+        # Generate snippet using AI if available, otherwise template
+        if self.ai_client:
+            snippet_data = self._generate_ai_snippet(
+                anchor,
+                target_content,
+                dest_content,
+                style_profile
+            )
+        else:
+            snippet_data = self._generate_snippet(
+                anchor,
+                target_content,
+                dest_content,
+                style_profile
+            )
         
         # Create quality scores (fallback always meets minimum)
         quality_scores = QualityScores(
