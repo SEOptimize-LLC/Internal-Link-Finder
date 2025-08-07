@@ -4,7 +4,7 @@ Internal Link Content Generator implementing the sophisticated .md framework wit
 
 import re
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # Added Tuple if needed
 import requests
 from bs4 import BeautifulSoup
 import numpy as np
@@ -12,13 +12,37 @@ from dataclasses import dataclass
 import nltk
 from textstat import flesch_reading_ease, flesch_kincaid_grade
 from collections import Counter
-import spacy
-from sentence_transformers import SentenceTransformer
-import openai
-from anthropic import Anthropic
-import google.generativeai as genai
-import streamlit as st
 
+# Handle optional imports gracefully
+try:
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
+except:
+    nlp = None
+    spacy = None
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+
+# AI libraries - handle gracefully if not installed
+try:
+    import openai
+except ImportError:
+    openai = None
+
+try:
+    from anthropic import Anthropic
+except ImportError:
+    Anthropic = None
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
+import streamlit as st
 from config import config, StyleProfile, QualityScores, LinkSuggestion
 
 # Download required NLTK data
@@ -28,14 +52,6 @@ try:
     nltk.download('averaged_perceptron_tagger', quiet=True)
 except:
     pass
-
-# Load spaCy model
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    nlp = None
-    logger = logging.getLogger(__name__)
-    logger.warning("spaCy model not loaded. Some features may be limited.")
 
 logger = logging.getLogger(__name__)
 
@@ -1020,3 +1036,4 @@ class QualityAssurance:
             return 0.85  # Simplified check
         
         return 0.75
+
