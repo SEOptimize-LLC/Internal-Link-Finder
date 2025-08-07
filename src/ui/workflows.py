@@ -3,7 +3,7 @@ Workflow management for multi-step processes
 """
 
 import streamlit as st
-from typing import Dict, Any
+from typing import Dict, Any, Optional  # Added Optional if needed
 import logging
 
 logger = logging.getLogger(__name__)
@@ -56,4 +56,5 @@ class WorkflowManager:
         """Get workflow progress percentage"""
         total_steps = 5  # Total workflow steps
         current = st.session_state.workflow_state['current_step']
+
         return min(current / total_steps, 1.0)
