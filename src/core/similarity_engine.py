@@ -5,7 +5,7 @@ Similarity calculation engine using embeddings
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple  # Added Tuple import
 import logging
 
 logger = logging.getLogger(__name__)
