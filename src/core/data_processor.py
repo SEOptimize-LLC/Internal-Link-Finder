@@ -4,7 +4,7 @@ Enhanced Data Processor for handling multiple file uploads and data integration
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any  # Added Tuple import
+from typing import Dict, List, Optional, Tuple, Any
 import logging
 from io import StringIO, BytesIO
 import json
@@ -62,14 +62,17 @@ class EnhancedDataProcessor:
             # Read CSV
             df = pd.read_csv(file)
             
+            logger.info(f"Links file columns: {df.columns.tolist()}")
+            
             # Map columns
             df = self._map_columns(df, 'screaming_frog_links')
             
             # Clean and validate
             df = self._clean_links_data(df)
             
-            # Filter internal links only
-            df = df[df['type'].str.lower() == 'internal']
+            # Filter internal links only if type column exists
+            if 'type' in df.columns:
+                df = df[df['type'].str.lower() == 'internal']
             
             logger.info(f"Processed {len(df)} internal links")
             return df
@@ -84,24 +87,87 @@ class EnhancedDataProcessor:
             # Read CSV
             df = pd.read_csv(file)
             
-            # Map columns
-            df = self._map_columns(df, 'screaming_frog_embeddings')
+            # Log actual columns for debugging
+            logger.info(f"Embeddings file columns: {df.columns.tolist()}")
+            
+            # Try to identify embedding column more flexibly
+            embedding_col = None
+            url_col = None
+            
+            # Find URL column
+            url_candidates = ['Address', 'URL', 'Page URL', 'url', 'address', 'page_url']
+            for col in df.columns:
+                if any(candidate.lower() in col.lower() for candidate in ['address', 'url']):
+                    url_col = col
+                    break
+            
+            if not url_col:
+                # Use first column as URL if no match found
+                url_col = df.columns[0]
+                logger.warning(f"No URL column found, using first column: {url_col}")
+            
+            # Find embedding column - look for columns with vector/embedding data
+            embedding_candidates = ['Embedding', 'Vector', 'Content Embedding', 'embedding', 'vector', 
+                                   'content_embedding', 'Embeddings', 'vectors']
+            
+            for col in df.columns:
+                # Check if column name contains embedding-related terms
+                if any(candidate.lower() in col.lower() for candidate in ['embedding', 'vector']):
+                    embedding_col = col
+                    break
+            
+            # If no embedding column found, look for columns with array-like data
+            if not embedding_col:
+                for col in df.columns:
+                    sample = str(df[col].iloc[0]) if len(df) > 0 else ''
+                    # Check if it looks like an array or vector
+                    if sample.startswith('[') or ',' in sample and any(char.isdigit() for char in sample):
+                        embedding_col = col
+                        logger.info(f"Detected embedding column by content pattern: {col}")
+                        break
+            
+            if not embedding_col:
+                # Check if there's a column that's not the URL column and contains numeric data
+                for col in df.columns:
+                    if col != url_col:
+                        sample = str(df[col].iloc[0]) if len(df) > 0 else ''
+                        if any(char.isdigit() for char in sample):
+                            embedding_col = col
+                            logger.warning(f"Using column '{col}' as embedding column (best guess)")
+                            break
+            
+            if not embedding_col:
+                raise ValueError(f"Could not find embedding column. Available columns: {df.columns.tolist()}")
+            
+            # Rename columns to standard names
+            df = df.rename(columns={url_col: 'url', embedding_col: 'embedding'})
             
             # Process embeddings
             df = self._process_embeddings(df)
+            
+            # Keep only necessary columns
+            keep_cols = ['url', 'embedding']
+            for col in ['title', 'word_count']:
+                if col in df.columns:
+                    keep_cols.append(col)
+            
+            df = df[keep_cols]
             
             logger.info(f"Processed embeddings for {len(df)} pages")
             return df
             
         except Exception as e:
             logger.error(f"Error processing embeddings file: {str(e)}")
-            raise
+            logger.error(f"Available columns: {df.columns.tolist() if 'df' in locals() else 'Unknown'}")
+            raise ValueError(f"Failed to process embeddings file. Please ensure it contains URL and embedding columns. Error: {str(e)}")
     
     def _process_gsc_file(self, file) -> pd.DataFrame:
         """Process Google Search Console export"""
         try:
             # Read CSV
             df = pd.read_csv(file)
+            
+            logger.info(f"GSC file columns: {df.columns.tolist()}")
             
             # Map columns
             df = self._map_columns(df, 'gsc_export')
@@ -121,15 +187,33 @@ class EnhancedDataProcessor:
         mappings = self.column_mappings.get(file_type, {})
         
         for standard_name, possible_names in mappings.items():
+            column_found = False
             for col_name in possible_names:
-                if col_name in df.columns:
-                    df = df.rename(columns={col_name: standard_name})
+                # Case-insensitive matching
+                for actual_col in df.columns:
+                    if col_name.lower() == actual_col.lower():
+                        df = df.rename(columns={actual_col: standard_name})
+                        column_found = True
+                        break
+                if column_found:
                     break
         
         return df
     
     def _clean_links_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and validate links data"""
+        # Check if required columns exist
+        if 'source' not in df.columns or 'destination' not in df.columns:
+            # Try to identify source and destination columns
+            logger.warning("Source or destination columns not found, attempting to identify...")
+            
+            # Look for columns that might be source/destination
+            for col in df.columns:
+                if 'from' in col.lower() or 'source' in col.lower():
+                    df = df.rename(columns={col: 'source'})
+                elif 'to' in col.lower() or 'dest' in col.lower() or 'target' in col.lower():
+                    df = df.rename(columns={col: 'destination'})
+        
         # Remove null values
         df = df.dropna(subset=['source', 'destination'])
         
@@ -150,35 +234,70 @@ class EnhancedDataProcessor:
         """Process embedding vectors"""
         if 'embedding' in df.columns:
             # Parse embedding strings if needed
-            if isinstance(df['embedding'].iloc[0], str):
-                df['embedding'] = df['embedding'].apply(self._parse_embedding)
+            if len(df) > 0:
+                sample = df['embedding'].iloc[0]
+                if isinstance(sample, str):
+                    df['embedding'] = df['embedding'].apply(self._parse_embedding)
+                elif pd.isna(sample):
+                    logger.warning("Embeddings contain null values")
+                    df['embedding'] = df['embedding'].fillna('[]').apply(self._parse_embedding)
         
         return df
     
     def _parse_embedding(self, embedding_str: str) -> np.ndarray:
         """Parse embedding string to numpy array"""
         try:
+            if pd.isna(embedding_str) or embedding_str == '':
+                return np.array([])
+            
+            embedding_str = str(embedding_str).strip()
+            
             # Handle different formats
-            if embedding_str.startswith('['):
-                return np.array(json.loads(embedding_str))
+            if embedding_str.startswith('[') and embedding_str.endswith(']'):
+                # JSON array format
+                try:
+                    return np.array(json.loads(embedding_str))
+                except:
+                    # Try parsing as comma-separated
+                    return np.fromstring(embedding_str.strip('[]'), sep=',')
+            elif ',' in embedding_str:
+                # Comma-separated format
+                return np.fromstring(embedding_str, sep=',')
             else:
-                return np.fromstring(embedding_str.strip('[]'), sep=',')
-        except:
+                # Space-separated format
+                return np.fromstring(embedding_str, sep=' ')
+        except Exception as e:
+            logger.warning(f"Failed to parse embedding: {str(e)}")
             return np.array([])
     
     def _clean_gsc_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and aggregate GSC data"""
-        # Ensure numeric columns
-        numeric_cols = ['clicks', 'impressions', 'position']
+        # Ensure numeric columns are numeric
+        numeric_cols = ['clicks', 'impressions', 'position', 'ctr']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
         # Remove null values
-        df = df.dropna(subset=['page'])
+        if 'page' in df.columns:
+            df = df.dropna(subset=['page'])
         
         # Standardize URLs
-        df['page'] = df['page'].str.strip()
+        if 'page' in df.columns:
+            df['page'] = df['page'].str.strip()
+        
+        # Fill missing values
+        fill_values = {
+            'clicks': 0,
+            'impressions': 0,
+            'position': 0,
+            'ctr': 0,
+            'query': 'Not Available'
+        }
+        
+        for col, val in fill_values.items():
+            if col in df.columns:
+                df[col] = df[col].fillna(val)
         
         return df
     
@@ -189,18 +308,24 @@ class EnhancedDataProcessor:
         
         # Create page inventory
         all_pages = set()
-        all_pages.update(links_df['source'].unique())
-        all_pages.update(links_df['destination'].unique())
-        all_pages.update(embeddings_df['url'].unique())
         
-        if gsc_df is not None:
+        if 'source' in links_df.columns:
+            all_pages.update(links_df['source'].unique())
+        if 'destination' in links_df.columns:
+            all_pages.update(links_df['destination'].unique())
+        if 'url' in embeddings_df.columns:
+            all_pages.update(embeddings_df['url'].unique())
+        
+        if gsc_df is not None and 'page' in gsc_df.columns:
             all_pages.update(gsc_df['page'].unique())
         
         # Create links matrix
         links_matrix = self._create_links_matrix(links_df, list(all_pages))
         
         # Create embeddings lookup
-        embeddings_lookup = dict(zip(embeddings_df['url'], embeddings_df['embedding']))
+        embeddings_lookup = {}
+        if 'url' in embeddings_df.columns and 'embedding' in embeddings_df.columns:
+            embeddings_lookup = dict(zip(embeddings_df['url'], embeddings_df['embedding']))
         
         # Process GSC metrics if available
         gsc_metrics = None
@@ -227,10 +352,11 @@ class EnhancedDataProcessor:
         n = len(pages)
         matrix = pd.DataFrame(0, index=pages, columns=pages)
         
-        # Populate matrix
-        for _, row in links_df.iterrows():
-            if row['source'] in pages and row['destination'] in pages:
-                matrix.loc[row['source'], row['destination']] = 1
+        # Populate matrix if columns exist
+        if 'source' in links_df.columns and 'destination' in links_df.columns:
+            for _, row in links_df.iterrows():
+                if row['source'] in pages and row['destination'] in pages:
+                    matrix.loc[row['source'], row['destination']] = 1
         
         return matrix
     
@@ -238,14 +364,22 @@ class EnhancedDataProcessor:
         """Aggregate GSC metrics by page"""
         metrics = {}
         
+        if 'page' not in gsc_df.columns:
+            return metrics
+        
         # Group by page
         page_groups = gsc_df.groupby('page')
         
         # Calculate metrics
-        metrics['url_queries_count'] = page_groups['query'].nunique().to_dict()
-        metrics['url_queries'] = page_groups['query'].apply(list).to_dict()
-        metrics['url_clicks'] = page_groups['clicks'].sum().to_dict()
-        metrics['url_impressions'] = page_groups['impressions'].sum().to_dict()
+        if 'query' in gsc_df.columns:
+            metrics['url_queries_count'] = page_groups['query'].nunique().to_dict()
+            metrics['url_queries'] = page_groups['query'].apply(list).to_dict()
+        
+        if 'clicks' in gsc_df.columns:
+            metrics['url_clicks'] = page_groups['clicks'].sum().to_dict()
+        
+        if 'impressions' in gsc_df.columns:
+            metrics['url_impressions'] = page_groups['impressions'].sum().to_dict()
         
         # Calculate average position
         if 'position' in gsc_df.columns:
@@ -276,13 +410,13 @@ class EnhancedDataProcessor:
         
         # Check for embeddings
         if not processed_data['embeddings_lookup']:
-            errors.append("No embeddings found in the data")
+            errors.append("No valid embeddings found in the data")
         
         # Check embedding dimensions
         if processed_data['embeddings_lookup']:
             embedding_dims = [len(e) for e in processed_data['embeddings_lookup'].values() if len(e) > 0]
             if embedding_dims and len(set(embedding_dims)) > 1:
-                errors.append("Inconsistent embedding dimensions detected")
+                logger.warning(f"Multiple embedding dimensions found: {set(embedding_dims)}")
         
         return len(errors) == 0, errors
     
@@ -301,7 +435,7 @@ class EnhancedDataProcessor:
             metrics['inbound_links'] = processed_data['links_matrix'][url].sum()
         
         # Add GSC metrics if available
-        if processed_data['gsc_metrics']:
+        if processed_data.get('gsc_metrics'):
             for metric_name, metric_dict in processed_data['gsc_metrics'].items():
                 if url in metric_dict:
                     metrics[metric_name] = metric_dict[url]
