@@ -6,7 +6,7 @@ import requests
 import base64
 import json
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # Added Tuple if needed
 import logging
 from datetime import datetime, timedelta
 import pandas as pd
@@ -339,3 +339,4 @@ class DataForSEOClient:
         
 
         return enhanced_data
+
