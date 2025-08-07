@@ -85,7 +85,7 @@ class DataForSEOClient:
     
     def get_bulk_search_volumes(self, keywords: List[str],
                                location: str = "United States",
-                               batch_size: int = 100) -> Dict[str, int]:
+                               batch_size: int = 1000) -> Dict[str, int]:
         """
         Get search volumes for large keyword lists in batches
         
@@ -337,4 +337,5 @@ class DataForSEOClient:
                 'avg_search_volume': sum(search_volumes.get(q, 0) for q in queries) / len(queries) if queries else 0
             }
         
+
         return enhanced_data
