@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import logging
 from io import StringIO, BytesIO
 import json
+import traceback
 
 from config import config, COLUMN_MAPPINGS
 
@@ -54,6 +55,7 @@ class EnhancedDataProcessor:
             
         except Exception as e:
             logger.error(f"Error processing files: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     def _process_links_file(self, file) -> pd.DataFrame:
@@ -62,6 +64,7 @@ class EnhancedDataProcessor:
             # Read CSV
             df = pd.read_csv(file)
             
+            logger.info(f"Links file shape: {df.shape}")
             logger.info(f"Links file columns: {df.columns.tolist()}")
             
             # Map columns
@@ -72,13 +75,16 @@ class EnhancedDataProcessor:
             
             # Filter internal links only if type column exists
             if 'type' in df.columns:
-                df = df[df['type'].str.lower() == 'internal']
+                # Handle case where type might be empty
+                df['type'] = df['type'].fillna('internal')
+                df = df[df['type'].str.lower().str.contains('internal', na=False)]
             
             logger.info(f"Processed {len(df)} internal links")
             return df
             
         except Exception as e:
             logger.error(f"Error processing links file: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     def _process_embeddings_file(self, file) -> pd.DataFrame:
@@ -87,79 +93,126 @@ class EnhancedDataProcessor:
             # Read CSV
             df = pd.read_csv(file)
             
-            # Log actual columns for debugging
+            # Log details for debugging
+            logger.info(f"Embeddings file shape: {df.shape}")
             logger.info(f"Embeddings file columns: {df.columns.tolist()}")
+            logger.info(f"First few column names: {df.columns[:5].tolist()}")
             
-            # Try to identify embedding column more flexibly
-            embedding_col = None
+            # Print sample of first row to understand data structure
+            if len(df) > 0:
+                logger.info("First row sample:")
+                for col in df.columns[:3]:  # Just first 3 columns for brevity
+                    sample_val = str(df[col].iloc[0])[:100]  # First 100 chars
+                    logger.info(f"  {col}: {sample_val}...")
+            
+            # Initialize with original DataFrame
+            result_df = df.copy()
+            
+            # Try to identify URL column
             url_col = None
+            url_candidates = ['Address', 'URL', 'Page URL', 'url', 'address', 'page_url', 'Page']
             
-            # Find URL column
-            url_candidates = ['Address', 'URL', 'Page URL', 'url', 'address', 'page_url']
+            # First try exact match (case-insensitive)
             for col in df.columns:
-                if any(candidate.lower() in col.lower() for candidate in ['address', 'url']):
+                if any(col.lower() == candidate.lower() for candidate in url_candidates):
                     url_col = col
+                    logger.info(f"Found URL column (exact match): {url_col}")
                     break
             
+            # If not found, try contains match
             if not url_col:
-                # Use first column as URL if no match found
+                for col in df.columns:
+                    if any(candidate.lower() in col.lower() for candidate in ['address', 'url', 'page']):
+                        url_col = col
+                        logger.info(f"Found URL column (contains match): {url_col}")
+                        break
+            
+            # If still not found, use first column
+            if not url_col:
                 url_col = df.columns[0]
                 logger.warning(f"No URL column found, using first column: {url_col}")
             
-            # Find embedding column - look for columns with vector/embedding data
-            embedding_candidates = ['Embedding', 'Vector', 'Content Embedding', 'embedding', 'vector', 
-                                   'content_embedding', 'Embeddings', 'vectors']
+            # Try to identify embedding column
+            embedding_col = None
             
+            # Check for embedding/vector in column names
             for col in df.columns:
-                # Check if column name contains embedding-related terms
-                if any(candidate.lower() in col.lower() for candidate in ['embedding', 'vector']):
+                col_lower = col.lower()
+                if 'embedding' in col_lower or 'vector' in col_lower:
                     embedding_col = col
+                    logger.info(f"Found embedding column by name: {embedding_col}")
                     break
             
-            # If no embedding column found, look for columns with array-like data
+            # If not found by name, look for array-like content
             if not embedding_col:
                 for col in df.columns:
-                    sample = str(df[col].iloc[0]) if len(df) > 0 else ''
-                    # Check if it looks like an array or vector
-                    if sample.startswith('[') or ',' in sample and any(char.isdigit() for char in sample):
-                        embedding_col = col
-                        logger.info(f"Detected embedding column by content pattern: {col}")
-                        break
+                    if col == url_col:  # Skip URL column
+                        continue
+                    
+                    # Check first non-null value
+                    non_null_vals = df[col].dropna()
+                    if len(non_null_vals) > 0:
+                        sample = str(non_null_vals.iloc[0])
+                        # Check if it looks like an array or list of numbers
+                        if (sample.startswith('[') and sample.endswith(']')) or \
+                           (sample.startswith('(') and sample.endswith(')')) or \
+                           (',' in sample and any(char.isdigit() or char == '.' or char == '-' for char in sample)):
+                            embedding_col = col
+                            logger.info(f"Found embedding column by content pattern: {embedding_col}")
+                            break
             
+            # Last resort - find any column with numeric-looking data that's not URL
             if not embedding_col:
-                # Check if there's a column that's not the URL column and contains numeric data
                 for col in df.columns:
-                    if col != url_col:
-                        sample = str(df[col].iloc[0]) if len(df) > 0 else ''
+                    if col == url_col:
+                        continue
+                    non_null_vals = df[col].dropna()
+                    if len(non_null_vals) > 0:
+                        sample = str(non_null_vals.iloc[0])
                         if any(char.isdigit() for char in sample):
                             embedding_col = col
-                            logger.warning(f"Using column '{col}' as embedding column (best guess)")
+                            logger.warning(f"Using column '{col}' as embedding (contains numbers)")
                             break
             
             if not embedding_col:
-                raise ValueError(f"Could not find embedding column. Available columns: {df.columns.tolist()}")
+                # List all columns and their first values for debugging
+                logger.error("Could not identify embedding column. Column analysis:")
+                for col in df.columns:
+                    if len(df) > 0:
+                        sample = str(df[col].iloc[0])[:50]
+                        logger.error(f"  {col}: {sample}")
+                raise ValueError(f"Could not find embedding column in: {df.columns.tolist()}")
             
-            # Rename columns to standard names
-            df = df.rename(columns={url_col: 'url', embedding_col: 'embedding'})
+            # Create new DataFrame with standardized column names
+            result_df = pd.DataFrame()
+            result_df['url'] = df[url_col]
+            result_df['embedding'] = df[embedding_col]
+            
+            # Add other useful columns if they exist
+            for orig_col in ['Title', 'title', 'Page Title']:
+                if orig_col in df.columns:
+                    result_df['title'] = df[orig_col]
+                    break
+            
+            for orig_col in ['Word Count', 'word_count', 'Words']:
+                if orig_col in df.columns:
+                    result_df['word_count'] = df[orig_col]
+                    break
+            
+            logger.info(f"Created result DataFrame with columns: {result_df.columns.tolist()}")
             
             # Process embeddings
-            df = self._process_embeddings(df)
+            result_df = self._process_embeddings(result_df)
             
-            # Keep only necessary columns
-            keep_cols = ['url', 'embedding']
-            for col in ['title', 'word_count']:
-                if col in df.columns:
-                    keep_cols.append(col)
-            
-            df = df[keep_cols]
-            
-            logger.info(f"Processed embeddings for {len(df)} pages")
-            return df
+            logger.info(f"Processed embeddings for {len(result_df)} pages")
+            return result_df
             
         except Exception as e:
             logger.error(f"Error processing embeddings file: {str(e)}")
-            logger.error(f"Available columns: {df.columns.tolist() if 'df' in locals() else 'Unknown'}")
-            raise ValueError(f"Failed to process embeddings file. Please ensure it contains URL and embedding columns. Error: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            if 'df' in locals():
+                logger.error(f"Available columns were: {df.columns.tolist()}")
+            raise ValueError(f"Failed to process embeddings file: {str(e)}")
     
     def _process_gsc_file(self, file) -> pd.DataFrame:
         """Process Google Search Console export"""
@@ -167,6 +220,7 @@ class EnhancedDataProcessor:
             # Read CSV
             df = pd.read_csv(file)
             
+            logger.info(f"GSC file shape: {df.shape}")
             logger.info(f"GSC file columns: {df.columns.tolist()}")
             
             # Map columns
@@ -175,11 +229,16 @@ class EnhancedDataProcessor:
             # Clean and aggregate
             df = self._clean_gsc_data(df)
             
-            logger.info(f"Processed GSC data for {df['page'].nunique()} pages")
+            if 'page' in df.columns:
+                logger.info(f"Processed GSC data for {df['page'].nunique()} pages")
+            else:
+                logger.warning("No 'page' column found in GSC data")
+            
             return df
             
         except Exception as e:
             logger.error(f"Error processing GSC file: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     def _map_columns(self, df: pd.DataFrame, file_type: str) -> pd.DataFrame:
@@ -194,6 +253,7 @@ class EnhancedDataProcessor:
                     if col_name.lower() == actual_col.lower():
                         df = df.rename(columns={actual_col: standard_name})
                         column_found = True
+                        logger.info(f"Mapped column '{actual_col}' to '{standard_name}'")
                         break
                 if column_found:
                     break
@@ -204,68 +264,120 @@ class EnhancedDataProcessor:
         """Clean and validate links data"""
         # Check if required columns exist
         if 'source' not in df.columns or 'destination' not in df.columns:
-            # Try to identify source and destination columns
             logger.warning("Source or destination columns not found, attempting to identify...")
             
             # Look for columns that might be source/destination
             for col in df.columns:
-                if 'from' in col.lower() or 'source' in col.lower():
+                col_lower = col.lower()
+                if 'from' in col_lower or 'source' in col_lower:
                     df = df.rename(columns={col: 'source'})
-                elif 'to' in col.lower() or 'dest' in col.lower() or 'target' in col.lower():
+                    logger.info(f"Mapped '{col}' to 'source'")
+                elif 'to' in col_lower or 'dest' in col_lower or 'target' in col_lower:
                     df = df.rename(columns={col: 'destination'})
+                    logger.info(f"Mapped '{col}' to 'destination'")
+        
+        # Check again if we have required columns
+        if 'source' not in df.columns or 'destination' not in df.columns:
+            raise ValueError(f"Could not find source/destination columns. Available: {df.columns.tolist()}")
         
         # Remove null values
+        initial_count = len(df)
         df = df.dropna(subset=['source', 'destination'])
+        if len(df) < initial_count:
+            logger.info(f"Removed {initial_count - len(df)} rows with null source/destination")
         
         # Standardize URLs
-        df['source'] = df['source'].str.strip()
-        df['destination'] = df['destination'].str.strip()
+        df['source'] = df['source'].astype(str).str.strip()
+        df['destination'] = df['destination'].astype(str).str.strip()
         
         # Remove self-links
-        df = df[df['source'] != df['destination']]
+        self_links = df[df['source'] == df['destination']]
+        if len(self_links) > 0:
+            df = df[df['source'] != df['destination']]
+            logger.info(f"Removed {len(self_links)} self-links")
         
         # Add type if missing
         if 'type' not in df.columns:
             df['type'] = 'internal'
+            logger.info("Added 'type' column with default value 'internal'")
         
         return df
     
     def _process_embeddings(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process embedding vectors"""
-        if 'embedding' in df.columns:
-            # Parse embedding strings if needed
-            if len(df) > 0:
-                sample = df['embedding'].iloc[0]
-                if isinstance(sample, str):
-                    df['embedding'] = df['embedding'].apply(self._parse_embedding)
-                elif pd.isna(sample):
-                    logger.warning("Embeddings contain null values")
-                    df['embedding'] = df['embedding'].fillna('[]').apply(self._parse_embedding)
+        if 'embedding' not in df.columns:
+            logger.error(f"No 'embedding' column found. Available columns: {df.columns.tolist()}")
+            return df
+        
+        logger.info(f"Processing {len(df)} embeddings")
+        
+        # Check what type of data we have
+        if len(df) > 0:
+            sample = df['embedding'].iloc[0]
+            logger.info(f"Embedding sample type: {type(sample)}")
+            logger.info(f"Embedding sample (first 100 chars): {str(sample)[:100]}")
+            
+            # Only parse if it's a string
+            if isinstance(sample, str) or pd.isna(sample):
+                logger.info("Embeddings are strings, parsing...")
+                df['embedding'] = df['embedding'].apply(self._parse_embedding)
+            elif isinstance(sample, (list, np.ndarray)):
+                logger.info("Embeddings are already arrays")
+                # Convert lists to numpy arrays
+                df['embedding'] = df['embedding'].apply(lambda x: np.array(x) if isinstance(x, list) else x)
+            else:
+                logger.warning(f"Unknown embedding type: {type(sample)}")
+                df['embedding'] = df['embedding'].apply(self._parse_embedding)
+        
+        # Check embedding dimensions
+        valid_embeddings = df['embedding'].apply(lambda x: len(x) > 0 if isinstance(x, np.ndarray) else False)
+        logger.info(f"Valid embeddings: {valid_embeddings.sum()} out of {len(df)}")
         
         return df
     
-    def _parse_embedding(self, embedding_str: str) -> np.ndarray:
+    def _parse_embedding(self, embedding_str) -> np.ndarray:
         """Parse embedding string to numpy array"""
         try:
-            if pd.isna(embedding_str) or embedding_str == '':
+            if pd.isna(embedding_str) or embedding_str == '' or embedding_str is None:
                 return np.array([])
             
             embedding_str = str(embedding_str).strip()
+            
+            # Handle empty strings
+            if not embedding_str:
+                return np.array([])
             
             # Handle different formats
             if embedding_str.startswith('[') and embedding_str.endswith(']'):
                 # JSON array format
                 try:
                     return np.array(json.loads(embedding_str))
-                except:
-                    # Try parsing as comma-separated
-                    return np.fromstring(embedding_str.strip('[]'), sep=',')
+                except json.JSONDecodeError:
+                    # Try parsing as comma-separated within brackets
+                    inner = embedding_str[1:-1]
+                    if inner:
+                        return np.fromstring(inner, sep=',')
+                    return np.array([])
+            elif embedding_str.startswith('(') and embedding_str.endswith(')'):
+                # Tuple format
+                inner = embedding_str[1:-1]
+                if inner:
+                    return np.fromstring(inner, sep=',')
+                return np.array([])
             elif ',' in embedding_str:
                 # Comma-separated format
                 return np.fromstring(embedding_str, sep=',')
-            else:
+            elif ' ' in embedding_str and any(char.isdigit() for char in embedding_str):
                 # Space-separated format
                 return np.fromstring(embedding_str, sep=' ')
+            else:
+                # Single value or unknown format
+                try:
+                    return np.array([float(embedding_str)])
+                except:
+                    logger.warning(f"Could not parse embedding: {embedding_str[:50]}")
+                    return np.array([])
+                    
         except Exception as e:
             logger.warning(f"Failed to parse embedding: {str(e)}")
             return np.array([])
@@ -278,13 +390,15 @@ class EnhancedDataProcessor:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Remove null values
+        # Remove null values from page column if it exists
         if 'page' in df.columns:
+            initial_count = len(df)
             df = df.dropna(subset=['page'])
-        
-        # Standardize URLs
-        if 'page' in df.columns:
-            df['page'] = df['page'].str.strip()
+            if len(df) < initial_count:
+                logger.info(f"Removed {initial_count - len(df)} rows with null page values")
+            
+            # Standardize URLs
+            df['page'] = df['page'].astype(str).str.strip()
         
         # Fill missing values
         fill_values = {
@@ -319,13 +433,21 @@ class EnhancedDataProcessor:
         if gsc_df is not None and 'page' in gsc_df.columns:
             all_pages.update(gsc_df['page'].unique())
         
+        logger.info(f"Total unique pages found: {len(all_pages)}")
+        
         # Create links matrix
         links_matrix = self._create_links_matrix(links_df, list(all_pages))
         
         # Create embeddings lookup
         embeddings_lookup = {}
         if 'url' in embeddings_df.columns and 'embedding' in embeddings_df.columns:
-            embeddings_lookup = dict(zip(embeddings_df['url'], embeddings_df['embedding']))
+            for _, row in embeddings_df.iterrows():
+                url = row['url']
+                embedding = row['embedding']
+                if isinstance(embedding, np.ndarray) and len(embedding) > 0:
+                    embeddings_lookup[url] = embedding
+        
+        logger.info(f"Created embeddings lookup for {len(embeddings_lookup)} pages")
         
         # Process GSC metrics if available
         gsc_metrics = None
@@ -355,8 +477,10 @@ class EnhancedDataProcessor:
         # Populate matrix if columns exist
         if 'source' in links_df.columns and 'destination' in links_df.columns:
             for _, row in links_df.iterrows():
-                if row['source'] in pages and row['destination'] in pages:
-                    matrix.loc[row['source'], row['destination']] = 1
+                source = row['source']
+                dest = row['destination']
+                if source in pages and dest in pages:
+                    matrix.loc[source, dest] = 1
         
         return matrix
     
@@ -365,6 +489,7 @@ class EnhancedDataProcessor:
         metrics = {}
         
         if 'page' not in gsc_df.columns:
+            logger.warning("No 'page' column in GSC data")
             return metrics
         
         # Group by page
@@ -381,13 +506,13 @@ class EnhancedDataProcessor:
         if 'impressions' in gsc_df.columns:
             metrics['url_impressions'] = page_groups['impressions'].sum().to_dict()
         
-        # Calculate average position
         if 'position' in gsc_df.columns:
             metrics['url_avg_position'] = page_groups['position'].mean().to_dict()
         
-        # Calculate CTR
         if 'ctr' in gsc_df.columns:
             metrics['url_avg_ctr'] = page_groups['ctr'].mean().to_dict()
+        
+        logger.info(f"Aggregated GSC metrics for {len(page_groups)} pages")
         
         return metrics
     
@@ -415,8 +540,11 @@ class EnhancedDataProcessor:
         # Check embedding dimensions
         if processed_data['embeddings_lookup']:
             embedding_dims = [len(e) for e in processed_data['embeddings_lookup'].values() if len(e) > 0]
-            if embedding_dims and len(set(embedding_dims)) > 1:
-                logger.warning(f"Multiple embedding dimensions found: {set(embedding_dims)}")
+            if embedding_dims:
+                unique_dims = set(embedding_dims)
+                if len(unique_dims) > 1:
+                    logger.warning(f"Multiple embedding dimensions found: {unique_dims}")
+                logger.info(f"Embedding dimensions: {unique_dims}")
         
         return len(errors) == 0, errors
     
@@ -424,15 +552,16 @@ class EnhancedDataProcessor:
         """Get all metrics for a specific page"""
         metrics = {
             'url': url,
-            'has_embedding': url in processed_data['embeddings_lookup'],
+            'has_embedding': url in processed_data.get('embeddings_lookup', {}),
             'outbound_links': 0,
             'inbound_links': 0
         }
         
         # Count links
-        if url in processed_data['links_matrix'].index:
-            metrics['outbound_links'] = processed_data['links_matrix'].loc[url].sum()
-            metrics['inbound_links'] = processed_data['links_matrix'][url].sum()
+        links_matrix = processed_data.get('links_matrix')
+        if links_matrix is not None and url in links_matrix.index:
+            metrics['outbound_links'] = int(links_matrix.loc[url].sum())
+            metrics['inbound_links'] = int(links_matrix[url].sum())
         
         # Add GSC metrics if available
         if processed_data.get('gsc_metrics'):
@@ -441,30 +570,3 @@ class EnhancedDataProcessor:
                     metrics[metric_name] = metric_dict[url]
         
         return metrics
-    
-    def export_processed_data(self, processed_data: Dict, 
-                            output_path: str) -> None:
-        """Export processed data to file"""
-        try:
-            # Create summary DataFrame
-            summary_data = []
-            for page in processed_data['pages']:
-                metrics = self.get_page_metrics(page, processed_data)
-                summary_data.append(metrics)
-            
-            summary_df = pd.DataFrame(summary_data)
-            
-            # Export to Excel with multiple sheets
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                processed_data['links_df'].to_excel(writer, sheet_name='Links', index=False)
-                processed_data['embeddings_df'].to_excel(writer, sheet_name='Embeddings', index=False)
-                
-                if processed_data['gsc_df'] is not None:
-                    processed_data['gsc_df'].to_excel(writer, sheet_name='GSC Data', index=False)
-            
-            logger.info(f"Processed data exported to {output_path}")
-            
-        except Exception as e:
-            logger.error(f"Error exporting data: {str(e)}")
-            raise
