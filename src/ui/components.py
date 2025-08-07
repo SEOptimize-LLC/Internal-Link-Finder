@@ -1,4 +1,4 @@
-"""
+python"""
 Reusable UI components for Streamlit
 """
 
@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-from typing import Dict, Optional
+from typing import Dict, Optional, List  # Added List if needed
 
 class UIComponents:
     """Reusable UI components"""
@@ -96,4 +96,5 @@ class UIComponents:
                     orientation='h',
                     title='Top 10 Opportunities'
                 )
+
                 st.plotly_chart(fig, use_container_width=True)
