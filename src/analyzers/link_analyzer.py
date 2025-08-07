@@ -4,7 +4,7 @@ Enhanced link opportunity analyzer
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple  # Added Tuple import
 import logging
 
 logger = logging.getLogger(__name__)
