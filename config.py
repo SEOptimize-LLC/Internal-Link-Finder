@@ -38,13 +38,13 @@ class AppConfig:
     MIN_FLOW_INTEGRATION_SCORE: float = 0.75
     MIN_FORMAT_COMPLIANCE_SCORE: float = 1.0  # 100% required
     
-    # DataForSEO settings
+    # DataForSEO settings - OPTIMIZED
     DATAFORSEO_API_URL: str = "https://api.dataforseo.com/v3/keywords_data/clickstream_data/dataforseo_search_volume/live"
     DATAFORSEO_LOCATION: str = "United States"
     DATAFORSEO_LANGUAGE: str = "en"
     DATAFORSEO_DEVICE: str = "desktop"
-    DATAFORSEO_BATCH_SIZE: int = 100
-    DATAFORSEO_RATE_LIMIT: int = 10  # requests per second
+    DATAFORSEO_BATCH_SIZE: int = 1000  # UPDATED from 100 to 1000 for efficiency
+    DATAFORSEO_RATE_LIMIT: int = 5  # Reduced from 10 to 5 requests per second for larger batches
     
     # Scraping settings
     USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
