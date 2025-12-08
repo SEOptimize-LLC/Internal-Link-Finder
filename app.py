@@ -259,19 +259,16 @@ def clean_embeddings_data(df):
     cleaned_df['URL'] = df[url_col]
     cleaned_df['Embeddings'] = df[embeddings_col]
 
+    # Remove HTTP URLs (only keep HTTPS)
+    cleaned_df = cleaned_df[cleaned_df['URL'].str.lower().str.startswith('https://')]
+
     # Filter out paginated URLs, legal pages, utility pages
     cleaned_df = cleaned_df[~cleaned_df['URL'].apply(should_exclude_url)]
 
-    # Deduplicate URLs (keep https over http, www over non-www)
+    # Deduplicate URLs based on normalized version (removes protocol and www for comparison)
     cleaned_df['URL_normalized'] = cleaned_df['URL'].apply(normalize_url_for_dedup)
-    # Sort to prefer https and www versions first
-    cleaned_df['sort_key'] = cleaned_df['URL'].apply(
-        lambda x: (0 if 'https://' in str(x).lower() else 1,
-                   0 if 'www.' in str(x).lower() else 1)
-    )
-    cleaned_df = cleaned_df.sort_values('sort_key')
     cleaned_df = cleaned_df.drop_duplicates('URL_normalized', keep='first')
-    cleaned_df = cleaned_df.drop(['URL_normalized', 'sort_key'], axis=1)
+    cleaned_df = cleaned_df.drop(['URL_normalized'], axis=1)
 
     return cleaned_df
 
