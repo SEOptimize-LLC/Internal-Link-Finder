@@ -32,7 +32,7 @@ st.set_page_config(
 
 GSC_URL_COLUMNS = [
     'landing page', 'landing pages', 'url', 'urls', 'page', 'pages',
-    'address', 'landing_page', 'landing_pages'
+    'address', 'landing_page', 'landing_pages', 'top pages', 'top page'
 ]
 
 GSC_CLICKS_COLUMNS = [
@@ -298,11 +298,21 @@ def process_gsc_data(df):
     return gsc_df
 
 
+def normalize_url(url):
+    """Normalize URL for comparison (lowercase, strip trailing slash)."""
+    if pd.isna(url):
+        return ""
+    return str(url).lower().strip().rstrip('/')
+
+
 def find_related_pages(df, top_n=5, min_similarity=0.0, progress_callback=None):
     """Find top N related pages based on cosine similarity."""
     related_pages = {}
     embeddings = np.stack(df['Embeddings'].values)
     urls = df['URL'].values
+
+    # Create normalized URL list for comparison
+    normalized_urls = [normalize_url(u) for u in urls]
 
     cosine_similarities = cosine_similarity(embeddings)
 
@@ -311,15 +321,19 @@ def find_related_pages(df, top_n=5, min_similarity=0.0, progress_callback=None):
             progress_callback(idx / len(urls))
 
         similar_indices = cosine_similarities[idx].argsort()[::-1]
+        current_url_normalized = normalized_urls[idx]
 
         related_with_scores = []
         for sim_idx in similar_indices:
-            if urls[sim_idx] != url:
-                score = cosine_similarities[idx][sim_idx]
-                if score >= min_similarity:
-                    related_with_scores.append((urls[sim_idx], round(score, 4)))
-                    if len(related_with_scores) >= top_n:
-                        break
+            # Skip if same URL (using normalized comparison)
+            if normalized_urls[sim_idx] == current_url_normalized:
+                continue
+
+            score = cosine_similarities[idx][sim_idx]
+            if score >= min_similarity:
+                related_with_scores.append((urls[sim_idx], round(score, 4)))
+                if len(related_with_scores) >= top_n:
+                    break
 
         related_pages[url] = related_with_scores
 
