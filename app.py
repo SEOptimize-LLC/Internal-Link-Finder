@@ -259,7 +259,29 @@ def clean_embeddings_data(df):
     cleaned_df['URL'] = df[url_col]
     cleaned_df['Embeddings'] = df[embeddings_col]
 
+    # Deduplicate URLs (keep https over http, www over non-www)
+    cleaned_df['URL_normalized'] = cleaned_df['URL'].apply(normalize_url_for_dedup)
+    # Sort to prefer https and www versions first
+    cleaned_df['sort_key'] = cleaned_df['URL'].apply(
+        lambda x: (0 if 'https://' in str(x).lower() else 1,
+                   0 if 'www.' in str(x).lower() else 1)
+    )
+    cleaned_df = cleaned_df.sort_values('sort_key')
+    cleaned_df = cleaned_df.drop_duplicates('URL_normalized', keep='first')
+    cleaned_df = cleaned_df.drop(['URL_normalized', 'sort_key'], axis=1)
+
     return cleaned_df
+
+
+def normalize_url_for_dedup(url):
+    """Normalize URL for deduplication purposes."""
+    if pd.isna(url):
+        return ""
+    url = str(url).lower().strip()
+    url = url.replace('https://', '').replace('http://', '')
+    url = url.replace('www.', '')
+    url = url.rstrip('/')
+    return url
 
 
 def process_gsc_data(df):
