@@ -259,7 +259,66 @@ def clean_embeddings_data(df):
     cleaned_df['URL'] = df[url_col]
     cleaned_df['Embeddings'] = df[embeddings_col]
 
+    # Remove HTTP URLs (only keep HTTPS)
+    cleaned_df = cleaned_df[cleaned_df['URL'].str.lower().str.startswith('https://')]
+
+    # Filter out paginated URLs, legal pages, utility pages
+    cleaned_df = cleaned_df[~cleaned_df['URL'].apply(should_exclude_url)]
+
+    # Deduplicate URLs based on normalized version (removes protocol and www for comparison)
+    cleaned_df['URL_normalized'] = cleaned_df['URL'].apply(normalize_url_for_dedup)
+    cleaned_df = cleaned_df.drop_duplicates('URL_normalized', keep='first')
+    cleaned_df = cleaned_df.drop(['URL_normalized'], axis=1)
+
     return cleaned_df
+
+
+def normalize_url_for_dedup(url):
+    """Normalize URL for deduplication purposes."""
+    if pd.isna(url):
+        return ""
+    url = str(url).lower().strip()
+    url = url.replace('https://', '').replace('http://', '')
+    url = url.replace('www.', '')
+    url = url.rstrip('/')
+    return url
+
+
+def should_exclude_url(url):
+    """Check if URL should be excluded (pagination, legal pages, utility pages)."""
+    if pd.isna(url):
+        return True
+
+    url_lower = str(url).lower()
+
+    # Paginated URLs (e.g., /page/2/, /page/5/)
+    import re
+    if re.search(r'/page/\d+/?', url_lower):
+        return True
+
+    # Legal and utility pages to exclude
+    exclude_patterns = [
+        '/privacy-policy', '/privacy', '/privacypolicy',
+        '/terms-of-service', '/terms-and-conditions', '/terms', '/tos',
+        '/contact-us', '/contact', '/contactus',
+        '/about-us', '/about', '/aboutus',
+        '/disclaimer', '/legal',
+        '/cookie-policy', '/cookies',
+        '/sitemap', '/site-map',
+        '/search', '/404', '/error',
+        '/login', '/register', '/signup', '/sign-up',
+        '/cart', '/checkout', '/account', '/my-account',
+        '/wp-admin', '/wp-login', '/admin',
+        '/feed', '/rss',
+        '/author/', '/tag/', '/category/',
+        '/reviews', '/testimonials',
+    ]
+
+    for pattern in exclude_patterns:
+        if pattern in url_lower:
+            return True
+
+    return False
 
 
 def process_gsc_data(df):
@@ -299,10 +358,17 @@ def process_gsc_data(df):
 
 
 def normalize_url(url):
-    """Normalize URL for comparison (lowercase, strip trailing slash)."""
+    """Normalize URL for comparison (remove protocol, lowercase, strip trailing slash)."""
     if pd.isna(url):
         return ""
-    return str(url).lower().strip().rstrip('/')
+    url = str(url).lower().strip()
+    # Remove protocol (http:// or https://)
+    url = url.replace('https://', '').replace('http://', '')
+    # Remove www. prefix
+    url = url.replace('www.', '')
+    # Strip trailing slash
+    url = url.rstrip('/')
+    return url
 
 
 def find_related_pages(df, top_n=5, min_similarity=0.0, progress_callback=None):
