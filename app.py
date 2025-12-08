@@ -259,6 +259,9 @@ def clean_embeddings_data(df):
     cleaned_df['URL'] = df[url_col]
     cleaned_df['Embeddings'] = df[embeddings_col]
 
+    # Filter out paginated URLs, legal pages, utility pages
+    cleaned_df = cleaned_df[~cleaned_df['URL'].apply(should_exclude_url)]
+
     # Deduplicate URLs (keep https over http, www over non-www)
     cleaned_df['URL_normalized'] = cleaned_df['URL'].apply(normalize_url_for_dedup)
     # Sort to prefer https and www versions first
@@ -282,6 +285,43 @@ def normalize_url_for_dedup(url):
     url = url.replace('www.', '')
     url = url.rstrip('/')
     return url
+
+
+def should_exclude_url(url):
+    """Check if URL should be excluded (pagination, legal pages, utility pages)."""
+    if pd.isna(url):
+        return True
+
+    url_lower = str(url).lower()
+
+    # Paginated URLs (e.g., /page/2/, /page/5/)
+    import re
+    if re.search(r'/page/\d+/?', url_lower):
+        return True
+
+    # Legal and utility pages to exclude
+    exclude_patterns = [
+        '/privacy-policy', '/privacy', '/privacypolicy',
+        '/terms-of-service', '/terms-and-conditions', '/terms', '/tos',
+        '/contact-us', '/contact', '/contactus',
+        '/about-us', '/about', '/aboutus',
+        '/disclaimer', '/legal',
+        '/cookie-policy', '/cookies',
+        '/sitemap', '/site-map',
+        '/search', '/404', '/error',
+        '/login', '/register', '/signup', '/sign-up',
+        '/cart', '/checkout', '/account', '/my-account',
+        '/wp-admin', '/wp-login', '/admin',
+        '/feed', '/rss',
+        '/author/', '/tag/', '/category/',
+        '/reviews', '/testimonials',
+    ]
+
+    for pattern in exclude_patterns:
+        if pattern in url_lower:
+            return True
+
+    return False
 
 
 def process_gsc_data(df):
