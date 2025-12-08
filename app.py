@@ -299,10 +299,17 @@ def process_gsc_data(df):
 
 
 def normalize_url(url):
-    """Normalize URL for comparison (lowercase, strip trailing slash)."""
+    """Normalize URL for comparison (remove protocol, lowercase, strip trailing slash)."""
     if pd.isna(url):
         return ""
-    return str(url).lower().strip().rstrip('/')
+    url = str(url).lower().strip()
+    # Remove protocol (http:// or https://)
+    url = url.replace('https://', '').replace('http://', '')
+    # Remove www. prefix
+    url = url.replace('www.', '')
+    # Strip trailing slash
+    url = url.rstrip('/')
+    return url
 
 
 def find_related_pages(df, top_n=5, min_similarity=0.0, progress_callback=None):
